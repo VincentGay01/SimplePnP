@@ -1,332 +1,278 @@
 #include <opencv2/opencv.hpp>
+#include <opencv2/viz.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/viz/widgets.hpp>
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <string>
-#include <filesystem>
-#include <nlohmann/json.hpp>
 
-using json = nlohmann::json;
-namespace fs = std::filesystem;
-
-// Variables globales
+// Variables globales pour stocker les points
 std::vector<cv::Point2f> imagePoints;
 std::vector<cv::Point3f> objectPoints;
-std::vector<cv::Point3f> allVertices;
-bool waitingFor3DPoint = false;
-int currentImagePointIndex = -1;
 cv::Mat image;
-cv::Mat model3DView;
+std::string windowName = "Sélection des points sur l'image";
 
-// Structure pour stockage des états
-struct AppState {
-    bool imagePointSelected = false;
-    cv::Point2f lastImagePoint;
-    int lastSelectedVertex = -1;
-};
-
-AppState state;
-
-// Fonction pour créer une visualisation simple du modèle 3D
-cv::Mat create3DModelView(const std::vector<cv::Point3f>& vertices, int width, int height) {
-    cv::Mat view = cv::Mat::zeros(height, width, CV_8UC3);
-
-    // Trouver les limites du modèle
-    cv::Point3f minBounds(FLT_MAX, FLT_MAX, FLT_MAX);
-    cv::Point3f maxBounds(-FLT_MAX, -FLT_MAX, -FLT_MAX);
-
-    for (const auto& v : vertices) {
-        minBounds.x = std::min(minBounds.x, v.x);
-        minBounds.y = std::min(minBounds.y, v.y);
-        minBounds.z = std::min(minBounds.z, v.z);
-
-        maxBounds.x = std::max(maxBounds.x, v.x);
-        maxBounds.y = std::max(maxBounds.y, v.y);
-        maxBounds.z = std::max(maxBounds.z, v.z);
-    }
-
-    // Calculer les facteurs d'échelle pour ajuster à la vue
-    float rangeX = maxBounds.x - minBounds.x;
-    float rangeY = maxBounds.y - minBounds.y;
-    float rangeZ = maxBounds.z - minBounds.z;
-
-    float scale = std::min(width / rangeX, height / rangeY) * 0.8f;
-
-    // Dessiner chaque point
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        int x = static_cast<int>((vertices[i].x - minBounds.x) * scale + width * 0.1);
-        int y = static_cast<int>((vertices[i].y - minBounds.y) * scale + height * 0.1);
-
-        // Couleur basée sur la coordonnée Z
-        int colorZ = static_cast<int>(255 * (vertices[i].z - minBounds.z) / rangeZ);
-        cv::circle(view, cv::Point(x, y), 2, cv::Scalar(colorZ, 255 - colorZ, 128), -1);
-
-        // Ajouter un numéro pour chaque 10ème point pour aider à l'identification
-        if (i % 10 == 0) {
-            cv::putText(view, std::to_string(i), cv::Point(x + 3, y - 3),
-                cv::FONT_HERSHEY_SIMPLEX, 0.3, cv::Scalar(200, 200, 200), 1);
-        }
-    }
-
-    return view;
-}
-
-std::vector<cv::Point3f> loadPLYVertices(const std::string& filename) {
-    std::vector<cv::Point3f> vertices;
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Erreur : Impossible d'ouvrir le fichier " << filename << std::endl;
-        return vertices;
-    }
-
-    std::string line;
-    bool headerEnded = false;
-    int vertexCount = 0;
-
-    // Lire l'en-tête
-    while (std::getline(file, line)) {
-        if (line == "end_header") {
-            headerEnded = true;
-            break;
-        }
-        if (line.substr(0, 14) == "element vertex") {
-            sscanf(line.c_str(), "element vertex %d", &vertexCount);
-        }
-    }
-
-    if (!headerEnded) {
-        std::cerr << "Erreur : En-tête du fichier .ply incorrect" << std::endl;
-        return vertices;
-    }
-
-    // Lire les sommets
-    for (int i = 0; i < vertexCount; ++i) {
-        std::getline(file, line);
-        float x, y, z;
-        std::istringstream iss(line);
-        iss >> x >> y >> z;
-        vertices.emplace_back(x, y, z);
-    }
-
-    return vertices;
-}
-
-void imageMouseCallback(int event, int x, int y, int flags, void* userdata) {
+// Fonction callback pour les clics souris
+void onMouseClick(int event, int x, int y, int flags, void* userdata) {
     if (event == cv::EVENT_LBUTTONDOWN) {
-        if (!state.imagePointSelected) {
-            state.lastImagePoint = cv::Point2f((float)x, (float)y);
-            state.imagePointSelected = true;
+        cv::Point2f point(x, y);
+        imagePoints.push_back(point);
 
-            std::cout << "Point image sélectionné : (" << x << ", " << y << ")" << std::endl;
-            std::cout << "Sélectionnez maintenant le point 3D correspondant" << std::endl;
+        // Marquer le point sur l'image
+        cv::circle(image, point, 5, cv::Scalar(0, 255, 0), -1);
+        cv::putText(image, std::to_string(imagePoints.size()),
+            cv::Point(x + 10, y - 10), cv::FONT_HERSHEY_SIMPLEX,
+            0.5, cv::Scalar(0, 255, 0), 2);
 
-            // Marquer le point temporairement
-            cv::Mat imgCopy = image.clone();
-            cv::circle(imgCopy, state.lastImagePoint, 5, cv::Scalar(0, 255, 255), -1);
-            cv::imshow("Image", imgCopy);
-        }
-    }
-}
-
-void model3DMouseCallback(int event, int x, int y, int flags, void* userdata) {
-    cv::Mat viewCopy = model3DView.clone();
-
-    // Afficher le point le plus proche sous la souris
-    if (event == cv::EVENT_MOUSEMOVE) {
-        // Cette partie est plus complexe et nécessiterait de recalculer la position 3D à partir de x,y
-        // Simplification: montrer un indicateur à la position actuelle
-        cv::circle(viewCopy, cv::Point(x, y), 3, cv::Scalar(0, 255, 255), -1);
-        cv::imshow("Modèle 3D", viewCopy);
-    }
-
-    // Sélectionner un point 3D
-    if (event == cv::EVENT_LBUTTONDOWN && state.imagePointSelected) {
-        // Demander le numéro du point 3D (simplification)
-        std::cout << "Entrez l'index du point 3D: ";
-        int idx;
-        std::cin >> idx;
-
-        if (idx >= 0 && idx < allVertices.size()) {
-            // Ajouter les points aux correspondances
-            imagePoints.push_back(state.lastImagePoint);
-            objectPoints.push_back(allVertices[idx]);
-
-            std::cout << "Correspondance ajoutée: Image(" << state.lastImagePoint.x << ", "
-                << state.lastImagePoint.y << ") -> 3D("
-                << allVertices[idx].x << ", " << allVertices[idx].y << ", "
-                << allVertices[idx].z << ")" << std::endl;
-
-            // Réinitialiser l'état
-            state.imagePointSelected = false;
-
-            // Mettre à jour les vues avec toutes les correspondances
-            cv::Mat imgWithPoints = image.clone();
-            for (size_t i = 0; i < imagePoints.size(); ++i) {
-                cv::circle(imgWithPoints, imagePoints[i], 5, cv::Scalar(0, 255, 0), -1);
-                cv::putText(imgWithPoints, std::to_string(i), imagePoints[i] + cv::Point2f(5, -5),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
-            }
-            cv::imshow("Image", imgWithPoints);
-
-            // Mettre à jour la vue du modèle 3D
-            cv::Mat modelWithPoints = model3DView.clone();
-            // Cette partie est simplifiée car nous ne recalculons pas les coordonnées écran
-            cv::imshow("Modèle 3D", modelWithPoints);
-        }
-        else {
-            std::cout << "Index de point 3D invalide!" << std::endl;
-        }
+        cv::imshow(windowName, image);
+        std::cout << "Point 2D #" << imagePoints.size() << " sélectionné: (" << x << ", " << y << ")" << std::endl;
     }
 }
 
 int main() {
-    // Charger l'image
-    image = cv::imread("D:/project/SimplePnP/baseColor.png");
-    if (image.empty()) {
-        std::cerr << "Erreur : Impossible de charger l'image." << std::endl;
-        return -1;
-    }
+    // 1. Demander le chemin du fichier PLY
+    std::string plyFilePath;
+    std::cout << "Entrez le chemin du fichier PLY: ";
+    std::cin >> plyFilePath;
 
-    // Charger les sommets du modèle 3D
-    allVertices = loadPLYVertices("D:/project/SimplePnP/point_cloud_1.ply");
-
-    if (allVertices.empty()) {
-        std::cerr << "Erreur lors du chargement du modèle 3D." << std::endl;
-        return -1;
-    }
-
-    std::cout << "Modèle chargé, nombre de sommets : " << allVertices.size() << std::endl;
-
-    // Créer une visualisation du modèle 3D
-    model3DView = create3DModelView(allVertices, image.cols, image.rows);
-
-    // Créer les fenêtres
-    cv::namedWindow("Image");
-    cv::namedWindow("Modèle 3D");
-
-    // Configurer les callbacks
-    cv::setMouseCallback("Image", imageMouseCallback);
-    cv::setMouseCallback("Modèle 3D", model3DMouseCallback);
-
-    // Afficher les fenêtres initiales
-    cv::imshow("Image", image);
-    cv::imshow("Modèle 3D", model3DView);
-
-    std::cout << "Instructions:" << std::endl;
-    std::cout << "1. Cliquez sur un point dans l'image" << std::endl;
-    std::cout << "2. Cliquez sur le point correspondant dans la vue 3D et entrez son index" << std::endl;
-    std::cout << "3. Répétez pour au moins 4 points" << std::endl;
-    std::cout << "4. Appuyez sur 'Esc' pour calculer la pose avec PnP" << std::endl;
-
-    // Boucle principale
-    while (true) {
-        char key = (char)cv::waitKey(10);
-        if (key == 27) { // ESC pour quitter
-            break;
-        }
-    }
-
-    // Vérifier si nous avons suffisamment de points
-    if (imagePoints.size() < 4) {
-        std::cerr << "Pas assez de correspondances pour PnP (minimum 4 requis). "
-            << "Vous avez fourni " << imagePoints.size() << " points." << std::endl;
-        return -1;
-    }
-
-    // Afficher tous les points collectés
-    std::cout << "Correspondances établies:" << std::endl;
-    for (size_t i = 0; i < imagePoints.size(); ++i) {
-        std::cout << "Image point " << i << ": (" << imagePoints[i].x << ", " << imagePoints[i].y << ")"
-            << " -> 3D point: (" << objectPoints[i].x << ", " << objectPoints[i].y
-            << ", " << objectPoints[i].z << ")" << std::endl;
-    }
-
-    // Sauvegarder les points dans un fichier
-    std::ofstream filePoints("points_correspondances.txt");
-    for (size_t i = 0; i < imagePoints.size(); ++i) {
-        filePoints << imagePoints[i].x << " " << imagePoints[i].y << " "
-            << objectPoints[i].x << " " << objectPoints[i].y << " " << objectPoints[i].z << std::endl;
-    }
-    filePoints.close();
-
-    // Lire les paramètres intrinsèques
-    std::ifstream fileIntrinsics("D:/project/SimplePnP/intrinsics.json");
-    if (!fileIntrinsics.is_open()) {
-        std::cerr << "Erreur d'ouverture du fichier JSON." << std::endl;
-        return -1;
-    }
-
-    json j;
+    // 2. Charger le maillage 3D depuis le fichier PLY
+    cv::viz::Mesh mesh;
     try {
-        fileIntrinsics >> j;
+        mesh = cv::viz::Mesh::load(plyFilePath);
+        std::cout << "Maillage PLY chargé avec succès." << std::endl;
+        std::cout << "Nombre de sommets: " << mesh.cloud.size() << std::endl;
     }
-    catch (const json::parse_error& e) {
-        std::cerr << "Erreur de parsing JSON : " << e.what() << std::endl;
-        return 1;
+    catch (const cv::Exception& e) {
+        std::cerr << "Erreur lors du chargement du fichier PLY: " << e.what() << std::endl;
+        return -1;
     }
 
-    // Extraire les paramètres intrinsèques
-    double fx = j["fx"];
-    double fy = j["fy"];
-    double cx = j["cx"];
-    double cy = j["cy"];
-    int width = j["width"];
-    int height = j["height"];
+    // Extraire les sommets du maillage
+    std::vector<cv::Point3f> meshVertices;
+    for (int i = 0; i < mesh.cloud.rows; i++) {
+        cv::Point3f vertex(
+            mesh.cloud.at<cv::Vec3f>(i)[0],
+            mesh.cloud.at<cv::Vec3f>(i)[1],
+            mesh.cloud.at<cv::Vec3f>(i)[2]
+        );
+        meshVertices.push_back(vertex);
+    }
 
-    cv::Mat rvec, tvec;
+    // 3. Demander le chemin de l'image
+    std::string imagePath;
+    std::cout << "Entrez le chemin de l'image: ";
+    std::cin >> imagePath;
+
+    // 4. Charger l'image
+    image = cv::imread(imagePath);
+    if (image.empty()) {
+        std::cerr << "Impossible de charger l'image!" << std::endl;
+        return -1;
+    }
+
+    // Créer une copie de l'image originale pour la restauration après chaque sélection
+    cv::Mat originalImage = image.clone();
+
+    // 5. Afficher le maillage 3D avec VIZ
+    cv::viz::Viz3d window3D("Maillage 3D");
+
+    // Ajouter des axes de coordonnées
+    window3D.showWidget("Axes", cv::viz::WCoordinateSystem(1.0));
+
+    // Création d'un widget pour afficher le maillage complet
+    cv::viz::WMesh meshWidget(mesh);
+    window3D.showWidget("Maillage", meshWidget);
+
+    std::cout << "Visualisation 3D du maillage." << std::endl;
+    std::cout << "Vous pouvez faire pivoter le modèle avec la souris." << std::endl;
+    std::cout << "Appuyez sur Q dans la fenêtre 3D pour continuer." << std::endl;
+    window3D.spin();
+
+    // 6. Permettre à l'utilisateur de sélectionner des points 3D spécifiques
+    std::cout << "\nSélection des points 3D:" << std::endl;
+    objectPoints.clear();
+
+    // Limiter le nombre de sommets à afficher pour la sélection
+    int maxVerticesToDisplay = std::min(500, (int)meshVertices.size());
+    int stepSize = meshVertices.size() / maxVerticesToDisplay;
+    stepSize = stepSize < 1 ? 1 : stepSize;
+
+    std::vector<cv::Point3f> sampledVertices;
+    for (size_t i = 0; i < meshVertices.size(); i += stepSize) {
+        sampledVertices.push_back(meshVertices[i]);
+    }
+
+    std::cout << "Nombre de sommets échantillonnés pour la sélection: " << sampledVertices.size() << std::endl;
+
+    bool selectionComplete = false;
+    int selectedIndex = 0;
+
+    // Créer un widget nuage de points pour les sommets échantillonnés
+    cv::viz::WCloud cloudWidget(sampledVertices, cv::viz::Color::white());
+    cloudWidget.setRenderingProperty(cv::viz::POINT_SIZE, 5);
+    window3D.showWidget("SampledPoints", cloudWidget);
+
+    while (!selectionComplete) {
+        window3D.removeWidget("PointMarker");
+
+        // Mettre en évidence le point actuel
+        cv::viz::WSphere currentPoint(sampledVertices[selectedIndex], 0.02, 10, cv::viz::Color::red());
+        window3D.showWidget("PointMarker", currentPoint);
+        window3D.spinOnce(1, true);
+
+        std::cout << "Point 3D #" << (selectedIndex + 1) << " / " << sampledVertices.size() << ": "
+            << sampledVertices[selectedIndex] << std::endl;
+        std::cout << "Commandes: (s)électionner ce point, (n)ext point, (p)revious point, (q)uitter la sélection: ";
+        char response;
+        std::cin >> response;
+
+        switch (response) {
+        case 's': case 'S':
+            objectPoints.push_back(sampledVertices[selectedIndex]);
+            std::cout << "Point 3D #" << objectPoints.size() << " sélectionné: "
+                << sampledVertices[selectedIndex] << std::endl;
+            break;
+        case 'n': case 'N':
+            selectedIndex = (selectedIndex + 1) % sampledVertices.size();
+            break;
+        case 'p': case 'P':
+            selectedIndex = (selectedIndex - 1 + sampledVertices.size()) % sampledVertices.size();
+            break;
+        case 'q': case 'Q':
+            if (objectPoints.size() >= 4) {
+                selectionComplete = true;
+            }
+            else {
+                std::cout << "Vous devez sélectionner au moins 4 points pour l'estimation de pose!" << std::endl;
+            }
+            break;
+        default:
+            std::cout << "Commande non reconnue." << std::endl;
+        }
+    }
+
+    window3D.close();
+
+    // 7. Permettre à l'utilisateur de sélectionner les points correspondants sur l'image
+    std::cout << "\nSélectionnez les points correspondants sur l'image (dans le même ordre que les points 3D)" << std::endl;
+    std::cout << "Nombre de points à sélectionner: " << objectPoints.size() << std::endl;
+
+    // Configurer la fenêtre pour la sélection des points sur l'image
+    cv::namedWindow(windowName, cv::WINDOW_NORMAL);
+    cv::resizeWindow(windowName, image.cols, image.rows);
+    cv::setMouseCallback(windowName, onMouseClick);
+    cv::imshow(windowName, image);
+
+    // Attendre que l'utilisateur ait sélectionné assez de points
+    while (imagePoints.size() < objectPoints.size()) {
+        char key = cv::waitKey(10);
+        if (key == 27) {  // Touche Échap pour quitter
+            return 0;
+        }
+    }
+
+    cv::destroyWindow(windowName);
+
+    // 8. Calibration de la caméra (pour un cas réel, ces paramètres devraient venir d'une calibration)
+    // Ici nous utilisons des valeurs approximatives basées sur la taille de l'image
+    double focalLength = image.cols;  // Une approximation raisonnable
+    cv::Point2d principalPoint(image.cols / 2, image.rows / 2);
+
     cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) <<
-        fx, 0, cx,
-        0, fy, cy,
+        focalLength, 0, principalPoint.x,
+        0, focalLength, principalPoint.y,
         0, 0, 1);
-    cv::Mat distCoeffs = cv::Mat::zeros(5, 1, CV_64F); // ou la vraie distortion si disponible
 
-    bool success = cv::solvePnP(objectPoints, imagePoints, cameraMatrix, distCoeffs, rvec, tvec);
+    cv::Mat distCoeffs = cv::Mat::zeros(5, 1, CV_64F);
 
-    if (success) {
-        std::cout << "Rotation vector : " << rvec.t() << std::endl;
-        std::cout << "Translation vector : " << tvec.t() << std::endl;
+    // 9. Estimer la pose de la caméra
+    cv::Mat rvec, tvec;
+    bool success = cv::solvePnP(objectPoints, imagePoints, cameraMatrix,
+        distCoeffs, rvec, tvec);
 
-        // Sauvegarder les résultats
-        json result;
-        std::vector<double> rotation = { rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2) };
-        std::vector<double> translation = { tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2) };
+    if (!success) {
+        std::cerr << "Échec de l'estimation de la pose!" << std::endl;
+        return -1;
+    }
 
-        result["rotation"] = rotation;
-        result["translation"] = translation;
+    // 10. Afficher les résultats
+    std::cout << "\nRésultats de l'estimation de pose:" << std::endl;
+    std::cout << "Vecteur de rotation (rvec):" << std::endl << rvec << std::endl;
+    std::cout << "Vecteur de translation (tvec):" << std::endl << tvec << std::endl;
 
-        std::ofstream resultFile("pnp_result.json");
-        resultFile << result.dump(4);
-        resultFile.close();
+    // Convertir le vecteur de rotation en matrice de rotation
+    cv::Mat rotationMatrix;
+    cv::Rodrigues(rvec, rotationMatrix);
+    std::cout << "Matrice de rotation:" << std::endl << rotationMatrix << std::endl;
 
-        // Projeter les points 3D pour vérification
-        std::vector<cv::Point2f> projectedPoints;
-        cv::projectPoints(objectPoints, rvec, tvec, cameraMatrix, distCoeffs, projectedPoints);
+    // 11. Visualiser la pose sur l'image
+    // Dessiner les axes 3D projetés
+    std::vector<cv::Point3f> axisPoints;
+    float axisLength = 1.0;  // Ajustez cette valeur selon l'échelle de votre modèle
+    axisPoints.push_back(cv::Point3f(0, 0, 0));
+    axisPoints.push_back(cv::Point3f(axisLength, 0, 0));  // X: rouge
+    axisPoints.push_back(cv::Point3f(0, axisLength, 0));  // Y: vert
+    axisPoints.push_back(cv::Point3f(0, 0, axisLength));  // Z: bleu
 
-        // Afficher l'erreur de reprojection
-        double totalError = 0;
-        for (size_t i = 0; i < projectedPoints.size(); ++i) {
-            double error = cv::norm(imagePoints[i] - projectedPoints[i]);
-            totalError += error;
-            std::cout << "Point " << i << " - Erreur: " << error << " pixels" << std::endl;
+    std::vector<cv::Point2f> projectedAxis;
+    cv::projectPoints(axisPoints, rvec, tvec, cameraMatrix, distCoeffs, projectedAxis);
+
+    // Dessiner les axes
+    cv::line(image, projectedAxis[0], projectedAxis[1], cv::Scalar(0, 0, 255), 2);  // X: rouge
+    cv::line(image, projectedAxis[0], projectedAxis[2], cv::Scalar(0, 255, 0), 2);  // Y: vert
+    cv::line(image, projectedAxis[0], projectedAxis[3], cv::Scalar(255, 0, 0), 2);  // Z: bleu
+
+    // Projeter une partie des sommets du maillage sur l'image
+    // Limiter le nombre de points à projeter pour éviter de surcharger l'image
+    std::vector<cv::Point3f> projectVertices;
+    int projectionSample = std::max(1, (int)(meshVertices.size() / 500));
+    for (size_t i = 0; i < meshVertices.size(); i += projectionSample) {
+        projectVertices.push_back(meshVertices[i]);
+    }
+
+    std::vector<cv::Point2f> projectedMesh;
+    cv::projectPoints(projectVertices, rvec, tvec, cameraMatrix, distCoeffs, projectedMesh);
+
+    // Dessiner les points projetés du maillage
+    for (const auto& point : projectedMesh) {
+        if (point.x >= 0 && point.x < image.cols && point.y >= 0 && point.y < image.rows) {
+            cv::circle(image, point, 1, cv::Scalar(255, 255, 0), -1);
         }
-        std::cout << "Erreur moyenne de reprojection: " << totalError / projectedPoints.size() << " pixels" << std::endl;
+    }
 
-        // Afficher l'image avec les points projetés pour vérification
-        cv::Mat imgWithProjection = image.clone();
-        for (size_t i = 0; i < imagePoints.size(); ++i) {
-            // Point original en vert
-            cv::circle(imgWithProjection, imagePoints[i], 5, cv::Scalar(0, 255, 0), -1);
-            // Point projeté en rouge
-            cv::circle(imgWithProjection, projectedPoints[i], 3, cv::Scalar(0, 0, 255), -1);
-            // Ligne entre les deux
-            cv::line(imgWithProjection, imagePoints[i], projectedPoints[i], cv::Scalar(255, 0, 0), 1);
-        }
+    // Dessiner les points de correspondance
+    for (size_t i = 0; i < imagePoints.size(); i++) {
+        cv::circle(image, imagePoints[i], 5, cv::Scalar(0, 255, 0), -1);
+        cv::putText(image, std::to_string(i + 1),
+            cv::Point(imagePoints[i].x + 10, imagePoints[i].y - 10),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
+    }
 
-        cv::imshow("Vérification de reprojection", imgWithProjection);
-        cv::waitKey(0);
+    // 12. Afficher l'image finale avec la projection
+    cv::namedWindow("Résultat de l'estimation de pose", cv::WINDOW_NORMAL);
+    cv::imshow("Résultat de l'estimation de pose", image);
+    std::cout << "Appuyez sur une touche pour terminer..." << std::endl;
+    cv::waitKey(0);
+
+    // Sauvegarder l'image résultante
+    std::string outputPath = "pose_estimation_result.jpg";
+    cv::imwrite(outputPath, image);
+    std::cout << "Image de résultat sauvegardée dans " << outputPath << std::endl;
+
+    // 13. Sauvegarder les paramètres de la caméra dans un fichier
+    std::string cameraParamsFile = "camera_params.yml";
+    cv::FileStorage fs(cameraParamsFile, cv::FileStorage::WRITE);
+    if (fs.isOpened()) {
+        fs << "cameraMatrix" << cameraMatrix;
+        fs << "distCoeffs" << distCoeffs;
+        fs << "rotationVector" << rvec;
+        fs << "translationVector" << tvec;
+        fs << "rotationMatrix" << rotationMatrix;
+        fs.release();
+        std::cout << "Paramètres de la caméra sauvegardés dans " << cameraParamsFile << std::endl;
     }
     else {
-        std::cerr << "Échec de solvePnP." << std::endl;
+        std::cerr << "Impossible d'ouvrir le fichier pour sauvegarder les paramètres de la caméra." << std::endl;
     }
 
     return 0;
