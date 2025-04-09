@@ -626,6 +626,9 @@ cloud_viewer_SOURCE_DIR:STATIC=D:/project/SimplePnP
 //The directory containing a CMake configuration file for flann.
 flann_DIR:PATH=flann_DIR-NOTFOUND
 
+//The directory containing a CMake configuration file for nlohmann_json.
+nlohmann_json_DIR:PATH=D:/vcpkg/installed/x64-windows/share/nlohmann_json
+
 //CMake built-in FindProtobuf.cmake module compatible
 protobuf_MODULE_COMPATIBLE:BOOL=OFF
 
@@ -865,6 +868,8 @@ FIND_PACKAGE_MESSAGE_DETAILS_Protobuf:INTERNAL=[D:/vcpkg/installed/x64-windows/t
 FIND_PACKAGE_MESSAGE_DETAILS_TIFF:INTERNAL=[optimized;D:/vcpkg/installed/x64-windows/lib/tiff.lib;debug;D:/vcpkg/installed/x64-windows/debug/lib/tiffd.lib][D:/vcpkg/installed/x64-windows/include][c ][v4.7.0()]
 //Details about finding Threads
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
+//Details about finding nlohmann_json
+FIND_PACKAGE_MESSAGE_DETAILS_nlohmann_json:INTERNAL=[D:/vcpkg/installed/x64-windows/share/nlohmann_json/nlohmann_jsonConfig.cmake][v3.11.3()]
 //ADVANCED property for variable: OPENGL_gl_LIBRARY
 OPENGL_gl_LIBRARY-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: OPENGL_glu_LIBRARY

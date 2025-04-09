@@ -15,11 +15,13 @@ endif()
 cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 include(D:/vcpkg/scripts/buildsystems/vcpkg.cmake)
 project(SimplePnP)
+set(OpenCV_ROOT "${VCPKG_INSTALLED_DIR}/x64-windows/share/opencv2")
 find_package(OpenCV REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable (SimplePnP main.cpp)
-
-target_link_libraries (SimplePnP  opencv)
+include_directories( ${OpenCV_INCLUDE_DIRS} )
+target_link_libraries (SimplePnP ${OpenCV_LIBS} nlohmann_json::nlohmann_json)
 
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
